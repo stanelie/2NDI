@@ -201,6 +201,9 @@ final class Encoder {
         // The parameter set has to accompany every keyframe: an NDI receiver can join at
         // any IDR and has no earlier bitstream to have learned it from.
         let parameterSets = isKeyframe ? Self.parameterSets(format: format, codec: codec) : Data()
+        if isKeyframe, bitstreamSummary == nil, codec == .h264 {
+            bitstreamSummary = Self.describeH264(parameterSets: parameterSets)
+        }
 
         submitLock.lock()
         let submitted = submitTimes.removeValue(forKey: ptsTicks)
@@ -256,6 +259,97 @@ final class Encoder {
             offset += nalLength
         }
         return out
+    }
+
+
+    /// Profile, level and chroma format, read back out of the SPS the encoder actually
+    /// produced.
+    ///
+    /// Worth showing rather than inferring, because VideoToolbox picks the *level* itself
+    /// from the resolution and frame rate, and the level is what a limited hardware decoder
+    /// refuses. Measured from this encoder: 1080p60 asks for level 4.2, 1080p30 for 4.0,
+    /// 720p60 for 3.2. Plenty of decoders stop at 4.1, which makes 1080p60 the single
+    /// setting that fails while every other one works — a pattern that looks arbitrary
+    /// until the level is visible.
+    private(set) var bitstreamSummary: String?
+
+    private static func describeH264(parameterSets: Data) -> String? {
+        // Find the SPS (NAL type 7) between Annex B start codes.
+        let bytes = [UInt8](parameterSets)
+        var sps: [UInt8] = []
+        var i = 0
+        while i + 3 < bytes.count {
+            if bytes[i] == 0, bytes[i+1] == 0, bytes[i+2] == 1 {
+                let body = i + 3
+                if body < bytes.count, bytes[body] & 0x1f == 7 {
+                    var end = body + 1
+                    while end + 3 < bytes.count,
+                          !(bytes[end] == 0 && bytes[end+1] == 0 && bytes[end+2] == 1) { end += 1 }
+                    sps = Array(bytes[(body + 1)..<min(end + 3, bytes.count)])
+                    break
+                }
+                i = body
+            } else { i += 1 }
+        }
+        guard sps.count >= 3 else { return nil }
+
+        // Strip emulation-prevention bytes before reading any Exp-Golomb fields.
+        var rbsp: [UInt8] = []
+        for (k, b) in sps.enumerated() {
+            if k >= 2, b == 3, sps[k-1] == 0, sps[k-2] == 0 { continue }
+            rbsp.append(b)
+        }
+
+        let profileIDC = Int(rbsp[0])
+        let levelIDC = Int(rbsp[2])
+        let profile: String
+        switch profileIDC {
+        case 66:  profile = "Baseline"
+        case 77:  profile = "Main"
+        case 100: profile = "High"
+        case 110: profile = "High 10"
+        case 122: profile = "High 4:2:2"
+        case 244: profile = "High 4:4:4"
+        default:  profile = "profile \(profileIDC)"
+        }
+
+        var chroma = "4:2:0"
+        if profileIDC == 100 || profileIDC == 110 || profileIDC == 122 || profileIDC == 244 {
+            var reader = BitReader(rbsp)
+            _ = reader.bits(24)
+            _ = reader.ue()
+            switch reader.ue() {
+            case 0: chroma = "4:0:0"
+            case 1: chroma = "4:2:0"
+            case 2: chroma = "4:2:2"
+            case 3: chroma = "4:4:4"
+            default: chroma = "?"
+            }
+        }
+
+        return String(format: "%@ profile, level %.1f, %@", profile, Double(levelIDC) / 10.0, chroma)
+    }
+
+    private struct BitReader {
+        let d: [UInt8]
+        var pos = 0
+        init(_ d: [UInt8]) { self.d = d }
+        mutating func bit() -> UInt32 {
+            guard pos < d.count * 8 else { return 0 }
+            let v = UInt32((d[pos >> 3] >> (7 - (pos & 7))) & 1)
+            pos += 1
+            return v
+        }
+        mutating func bits(_ c: Int) -> UInt32 {
+            var v: UInt32 = 0
+            for _ in 0..<c { v = (v << 1) | bit() }
+            return v
+        }
+        mutating func ue() -> UInt32 {
+            var z = 0
+            while bit() == 0 && z < 32 { z += 1 }
+            return z == 0 ? 0 : ((1 << UInt32(z)) - 1) + bits(z)
+        }
     }
 
     private static func parameterSets(format: CMFormatDescription, codec: Codec) -> Data {

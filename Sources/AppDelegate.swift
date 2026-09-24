@@ -894,6 +894,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         lines.append("codec            \(codecName)\(config.codec != .speedHQ ? (pipeline.isHardwareEncoding ? "  hardware" : "  SOFTWARE") : "")")
         lines.append("source           \(s.sourceWidth) × \(s.sourceHeight) @ \(String(format: "%.1f", s.sourceFPS)) fps")
         lines.append("output           \(s.outputWidth) × \(s.outputHeight) @ \(String(format: "%.1f", s.sentFPS)) fps")
+        // The level is chosen by VideoToolbox from the resolution and rate, and it is what
+        // a limited hardware decoder refuses, so show it rather than leaving it implicit.
+        if let bitstream = pipeline.bitstreamSummary {
+            lines.append("bitstream        \(bitstream)")
+        }
         let declared = pipeline.nominalFPS
         let origin: String
         if pipeline.frameRateLimitedBySource {

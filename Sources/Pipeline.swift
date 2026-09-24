@@ -103,6 +103,8 @@ final class Pipeline {
 
     var isRunning: Bool { sender != nil }
     var isHardwareEncoding: Bool { encoder?.isHardware ?? false }
+    /// Profile, level and chroma read back out of the SPS actually being sent.
+    var bitstreamSummary: String? { encoder?.bitstreamSummary }
 
     // MARK: - Lifecycle
 

@@ -56,8 +56,15 @@ if mode == "metal" {
             source.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
                            withBytes: $0.baseAddress!, bytesPerRow: width * 4)
         }
-        guard let copied = pool.copy(from: source) else { print("pool.copy FAILED"); break }
-        encoder.encode(pixelBuffer: copied.frame.pixelBuffer, pts: Int64(i) * 333_333, forceKeyframe: i == 0)
+        // copy() became asynchronous when the capture queue stopped waiting on the GPU;
+        // this tool wants one frame at a time, so it waits for the completion itself.
+        let ready = DispatchSemaphore(value: 0)
+        let submitted = pool.copy(from: source) { frame, _ in
+            encoder.encode(pixelBuffer: frame.pixelBuffer, pts: Int64(i) * 333_333, forceKeyframe: i == 0)
+            ready.signal()
+        }
+        guard submitted else { print("pool.copy FAILED"); break }
+        ready.wait()
         if !unpaced { usleep(33_000) }
     }
 } else {
@@ -84,6 +91,7 @@ let submitDone = Date()
 usleep(300_000)
 encoder.stop()
 let elapsed = Date().timeIntervalSince(started)
+if let bitstream = encoder.bitstreamSummary { print("bitstream:  \(bitstream)") }
 print(String(format: "throughput: %d frames in %.2f s = %.1f fps", received, elapsed, Double(received) / elapsed))
 print(String(format: "latency:    %.2f ms mean, %.2f ms peak", latencyTotal / Double(max(received, 1)), latencyPeak))
 exit(received > 0 ? 0 : 2)

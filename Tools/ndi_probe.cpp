@@ -183,6 +183,7 @@ int main(int argc, char* argv[])
 	                                  : (NDIlib_recv_color_format_e)NDIlib_recv_color_format_ex_compressed_v4;
 	recv_desc.bandwidth = want_low ? NDIlib_recv_bandwidth_lowest : NDIlib_recv_bandwidth_highest;
 	printf("requesting %s bandwidth\n", want_low ? "LOWEST (proxy)" : "highest");
+	bool dumped_fields = false;
 	NDIlib_recv_instance_t recv = NDIlib_recv_create_v3(&recv_desc);
 	if (!recv) { printf("could not create receiver\n"); return 1; }
 
@@ -200,8 +201,32 @@ int main(int argc, char* argv[])
 
 	while (elapsed_seconds() < seconds) {
 		NDIlib_video_frame_v2_t video;
-		NDIlib_frame_type_e type = NDIlib_recv_capture_v2(recv, &video, nullptr, nullptr, 100);
+		NDIlib_metadata_frame_t meta = {};
+		NDIlib_frame_type_e type = NDIlib_recv_capture_v2(recv, &video, nullptr, &meta, 100);
+		if (type == NDIlib_frame_type_metadata) {
+			if (meta.p_data) printf("  metadata    %s\n", meta.p_data);
+			NDIlib_recv_free_metadata(recv, &meta);
+			continue;
+		}
 		if (type != NDIlib_frame_type_video) continue;
+
+		// Every field the sender controls, printed once, so two senders can be diffed
+		// rather than compared by eye against whichever few fields seemed relevant.
+		if (!dumped_fields) {
+			dumped_fields = true;
+			printf("  frame fields\n");
+			printf("    xres/yres           %d x %d\n", video.xres, video.yres);
+			printf("    FourCC              %.4s (0x%08X)\n", (const char*)&video.FourCC, video.FourCC);
+			printf("    frame_rate          %d/%d\n", video.frame_rate_N, video.frame_rate_D);
+			printf("    aspect_ratio        %.6f\n", video.picture_aspect_ratio);
+			printf("    frame_format_type   %d%s\n", (int)video.frame_format_type,
+			       video.frame_format_type == NDIlib_frame_format_type_progressive ? " (progressive)" : "");
+			printf("    timecode            %lld\n", (long long)video.timecode);
+			printf("    timestamp           %lld\n", (long long)video.timestamp);
+			printf("    line_stride/size    %d\n", video.line_stride_in_bytes);
+			printf("    data_size_in_bytes  %d\n", video.data_size_in_bytes);
+			printf("    p_metadata          %s\n", video.p_metadata ? video.p_metadata : "(none)");
+		}
 
 		// The moment the format changes at the receiver. If undecodable frames of the new
 		// codec arrive before its first keyframe, that gap is the corruption window.

@@ -9,13 +9,26 @@ ADV="/Library/NDI Advanced SDK for Apple"
 SRC="$ADV/examples/C++ (HX2)"
 OUT="$(cd "$(dirname "$0")" && pwd)"
 
+# Portable by default: universal, with the dylib resolved next to the binary, so the
+# whole folder can be handed to a machine that has no SDK installed. That matters because
+# the machine with the awkward receiver on it is rarely the machine with the SDK on it.
+PKG="$OUT/hxref"
+rm -rf "$PKG"; mkdir -p "$PKG"
+cp "$ADV/lib/macOS/libndi_advanced.dylib" "$PKG/"
+
 for NAME in NDIlib_Send_H264 NDIlib_Send_HEVC; do
+  BIN="$PKG/${NAME#NDIlib_Send_}_ref"
   echo "==> $NAME"
-  clang++ -std=c++17 -O2 \
+  clang++ -std=c++17 -O2 -arch x86_64 -arch arm64 \
+    -mmacosx-version-min=11.0 \
     -I"$ADV/include" -I"$SRC/$NAME" \
     "$SRC/$NAME/$NAME.cpp" \
-    "$ADV/lib/macOS/libndi_advanced.dylib" \
-    -Wl,-rpath,"$ADV/lib/macOS" \
-    -o "$OUT/${NAME#NDIlib_Send_}_ref"
-  echo "    -> $OUT/${NAME#NDIlib_Send_}_ref"
+    "$PKG/libndi_advanced.dylib" \
+    -Wl,-rpath,@loader_path \
+    -o "$BIN"
+  install_name_tool -change \
+    "@rpath/libndi_advanced.dylib" "@loader_path/libndi_advanced.dylib" "$BIN" 2>/dev/null || true
+  codesign --force --sign - "$BIN" 2>/dev/null || true
+  echo "    -> $BIN"
 done
+codesign --force --sign - "$PKG/libndi_advanced.dylib" 2>/dev/null || true

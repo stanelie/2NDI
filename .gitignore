@@ -22,5 +22,6 @@ Tools/soak/soak
 
 macOS/*.dSYM
 .DS_Store
-Tools/hxref/H264_ref
-Tools/hxref/HEVC_ref
+# hxref/build.sh assembles a portable folder of NDI's own reference senders;
+# it is ~100 MB of SDK binaries and canned bitstream, all regenerable.
+Tools/hxref/hxref/
