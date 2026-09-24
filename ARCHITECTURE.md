@@ -246,14 +246,24 @@ a different resolution, leaves it showing NDI's "video decoder not found" card u
 decoder process is restarted from its web UI. It sets its decoder up when it connects and
 never again.
 
-So the bounce is back, as `reconnectOnFormatChange`, on by default, covering codec,
-resolution, frame rate and profile. The earlier measurement was not wrong, it was just
-taken against receivers that did not need it; a receiver that does need it gets nothing at
-all without it, which is worth more than the two seconds it costs. Measured with
-`Tools/profile … 8` and a probe across the switch: receivers drop to zero and are back
-about **2 s** later, and the probe follows the source across the bounce and reports the new
-format correctly. It can be turned off for a software-only setup, where the switch stays
-instant.
+The bounce came back for this, as `reconnectOnFormatChange` — and **it did not work
+either**. Destroying the sender and re-creating it made no difference to the BirdDog; a
+resolution or frame-rate change still needed its decoder restarted by hand. The first
+version re-created the sender in the same breath as destroying it, which NDI papers over so
+smoothly that a receiver need never notice the source left at all, so the bounce now takes
+the source off the network for a real **3 s** first. That is measurable from outside —
+`Tools/profile … 6` with a probe across the switch shows sent frames at 0.0 for three
+seconds, connections dropping to zero, and the source returning with the new FourCC and
+57.6 fps — but whether it is enough to make that particular decoder let go is untested.
+
+So it is **off by default**. The mechanism is sound and another receiver may well need it,
+but it costs five or six seconds of every format change and has already failed its one
+real test; it is not going to tax every switch on the strength of an idea that has not
+worked yet.
+
+What is left is a device limitation with no lever on this side. The BirdDog sets its
+decoder up when it connects and never again, and short of never changing format on a live
+sender there is nothing a sender can do about it.
 
 The general shape is worth keeping: *"correct by the specification" and "works on the
 device" are different claims, and only the second one ships.* Everything about this stream

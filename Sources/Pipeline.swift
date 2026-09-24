@@ -37,7 +37,12 @@ struct PipelineConfig: Equatable {
     /// different resolution — it shows NDI's "video decoder not found" card until its
     /// decoder process is restarted by hand. Reconnecting is the only lever a sender has
     /// to make that happen on its own.
-    var reconnectOnFormatChange = true
+    /// Off by default. It was on, on the theory that it would make a hardware decoder
+    /// re-initialise; measured against the BirdDog Play it did not, and it costs a few
+    /// seconds of every format change. It stays available because the mechanism is sound
+    /// and another receiver may well need it, but it is not going to tax every switch on
+    /// the strength of an idea that has already failed its one test.
+    var reconnectOnFormatChange = false
     /// Corrects sources that publish with the opposite vertical origin — Millumin 2 and
     /// other OpenGL Syphon servers arrive upside down. Applied to the NDI output, not
     /// just the preview.
@@ -268,15 +273,24 @@ final class Pipeline {
     /// Re-creates the sender and the delivery monitor, leaving the input and the capture
     /// running. Cheaper and far less disruptive than a full `start()`, which would also
     /// tear down the Syphon client or the camera.
+    /// How long the source stays off the network during a bounce.
+    ///
+    /// Not zero. The first version destroyed the sender and re-created it in the same
+    /// breath, which NDI papers over so smoothly that a receiver need never notice the
+    /// source left — and a BirdDog Play did not: it still had to have its decoder
+    /// restarted by hand. If a bounce is going to be worth its cost, the source has to
+    /// actually be gone long enough for a receiver to tear its decoder down.
+    static let senderAbsenceSeconds = 3.0
+
     private func restartSender() {
         let name = config.ndiName
         monitor?.stop()
         monitor = nil
         queue.sync {
             sender?.stop()
-            sender = NDISender(name: name)
-            // The new sender has no receivers yet and the encoder must open the new
-            // stream with an IDR, so start it clean.
+            sender = nil
+            // Nothing is sent while the sender is gone, and the encoder must open the new
+            // stream with an IDR anyway, so tear it down too.
             encoder?.stop()
             encoder = nil
             previewEncoder?.stop()
@@ -284,10 +298,17 @@ final class Pipeline {
             previewPool = nil
             pendingEncodes.removeAll()
             previewLastKeyframe = 0
-            startTime = CFAbsoluteTimeGetCurrent()
             nextSendDeadline = 0
         }
-        monitor = NDIDeliveryMonitor(sourceName: name)
+        queue.asyncAfter(deadline: .now() + Self.senderAbsenceSeconds) { [weak self] in
+            guard let self else { return }
+            self.sender = NDISender(name: name)
+            self.startTime = CFAbsoluteTimeGetCurrent()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.sender != nil else { return }
+                self.monitor = NDIDeliveryMonitor(sourceName: name)
+            }
+        }
     }
 
     /// Writes the next outgoing frame to `url`. Encoding it stalls one frame, which is

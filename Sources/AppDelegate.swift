@@ -424,9 +424,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         reconnectCheckbox.action = #selector(controlChanged)
         // Default on: a receiver that does not need it loses a second or two on a change it
         // asked for, while one that does need it shows nothing at all without it.
-        reconnectCheckbox.state = UserDefaults.standard.object(forKey: "reconnectOnFormatChange") == nil
-            || UserDefaults.standard.bool(forKey: "reconnectOnFormatChange") ? .on : .off
-        reconnectCheckbox.toolTip = "Drops and re-makes the NDI sender when the codec, resolution, frame rate or profile changes, so receivers re-negotiate. Hardware decoders generally set their decoder up once when they connect and show nothing after a format change without this; software receivers follow a change on their own and only lose a second or two to the reconnect."
+        reconnectCheckbox.state = UserDefaults.standard.bool(forKey: "reconnectOnFormatChange") ? .on : .off
+        reconnectCheckbox.toolTip = "Takes the source off the network for a few seconds when the codec, resolution, frame rate or profile changes, so receivers have to find it again and re-negotiate. Off by default: it did not persuade a BirdDog Play to re-initialise its decoder, and it costs several seconds of every change. Worth one try with an awkward receiver."
         stack.addArrangedSubview(reconnectCheckbox)
 
         startButton.target = self
@@ -575,8 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         let defaults = UserDefaults.standard
         var config = PipelineConfig()
         if let name = defaults.string(forKey: "ndiName"), !name.isEmpty { config.ndiName = name }
-        config.reconnectOnFormatChange = defaults.object(forKey: "reconnectOnFormatChange") == nil
-            || defaults.bool(forKey: "reconnectOnFormatChange")
+        config.reconnectOnFormatChange = defaults.bool(forKey: "reconnectOnFormatChange")
         config.codec = NDICodec(rawValue: defaults.integer(forKey: "codec")) ?? .speedHQ
         selectedMaxHeight = defaults.integer(forKey: "resolutionMaxHeight")
         config.resolution = selectedMaxHeight > 0 ? .maxHeight(selectedMaxHeight) : .native

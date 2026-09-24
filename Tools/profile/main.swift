@@ -62,6 +62,8 @@ var tick = 0
 if switchAfter > 0 {
     Timer.scheduledTimer(withTimeInterval: switchAfter, repeats: false) { _ in
         var next = pipeline.config
+        // The bounce is off by default in the app; this tool exists to measure it.
+        next.reconnectOnFormatChange = ProcessInfo.processInfo.environment["PROFILE_BOUNCE"] != nil
         next.codec = (next.codec == .speedHQ) ? .h264 : .speedHQ
         print("--- switching codec to \(next.codec == .h264 ? "h264" : "speedhq") ---")
         fflush(stdout)
