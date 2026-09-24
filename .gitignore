@@ -1,0 +1,24 @@
+# Build output — regenerate with ./build.sh
+.build/
+*.zip
+
+# Compiled tool binaries and intermediates — each Tools/<name>/build.sh regenerates these
+# from the .swift/.cpp/.m source that sits next to them.
+Tools/ndi_probe
+Tools/ndi_watch
+Tools/encoder_test
+Tools/dump/syphon_dump
+Tools/fit/fit_test
+Tools/icon/make_icon
+Tools/icon/AppIcon.iconset/
+Tools/list/syphon_list
+Tools/logtest/logtest
+Tools/pattern/syphon_pattern
+Tools/profile/profile
+Tools/sdkref/ndi_recv_png
+Tools/sdkref/ndi_send_png
+Tools/soak/soak
+*.o
+
+macOS/*.dSYM
+.DS_Store
