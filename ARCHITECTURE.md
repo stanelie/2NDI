@@ -233,13 +233,32 @@ sets. There is no window of undecodable frames.
 An earlier reading of this claimed a 2.3 s corruption window and led to "fix" it by
 bouncing the sender on every codec change. That was comparing the keyframe time against an
 *estimated* switch time instead of against the measured format change. The bounce cost
-about 3 s of reconnect downtime and 24 dropped frames, fixed nothing, and was reverted.
-Switching codecs is this app's main job and stays instant.
+about 3 s of reconnect downtime and 24 dropped frames, fixed nothing *for a software
+receiver*, and was reverted.
 
-What is left is receiver-side: a decoder that does not reinitialise when the FourCC changes
-under an established connection will produce garbage no matter how correct the stream is.
-Stopping and starting the stream forces it to renegotiate, which is the manual version of
-the bounce, available when a particular receiver needs it without taxing every switch.
+What was left was receiver-side, and the paragraph that used to sit here said so: a decoder
+that does not reinitialise when the format changes under an established connection will
+produce nothing useful no matter how correct the stream is. That turned out to describe
+real hardware exactly. A **BirdDog Play** decodes NDI's own HX2 reference sender correctly
+and decodes ours correctly too — at 720p30, 720p60, 1080p30 and 1080p60 alike — but only
+ever for the *first* format it is given. Any change after that, a different codec or merely
+a different resolution, leaves it showing NDI's "video decoder not found" card until its
+decoder process is restarted from its web UI. It sets its decoder up when it connects and
+never again.
+
+So the bounce is back, as `reconnectOnFormatChange`, on by default, covering codec,
+resolution, frame rate and profile. The earlier measurement was not wrong, it was just
+taken against receivers that did not need it; a receiver that does need it gets nothing at
+all without it, which is worth more than the two seconds it costs. Measured with
+`Tools/profile … 8` and a probe across the switch: receivers drop to zero and are back
+about **2 s** later, and the probe follows the source across the bounce and reports the new
+format correctly. It can be turned off for a software-only setup, where the switch stays
+instant.
+
+The general shape is worth keeping: *"correct by the specification" and "works on the
+device" are different claims, and only the second one ships.* Everything about this stream
+measured clean — FourCC, Annex B framing, parameter sets in band and out, 4:2:0, level
+within spec, proxy stream present — while the actual decoder showed a grey card.
 
 ## Output resolution is built from the source, and only reduces
 

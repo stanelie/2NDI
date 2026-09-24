@@ -27,6 +27,17 @@ struct PipelineConfig: Equatable {
     var allowHardwareEncoder = true
     /// H.264 only. Baseline is the cheapest for a receiver to decode.
     var h264Profile = Encoder.Profile.high
+
+    /// Drop and re-create the NDI sender when the video format changes, forcing every
+    /// receiver to reconnect and re-negotiate.
+    ///
+    /// NDI itself supports changing format on a live sender, and software receivers follow
+    /// it without complaint. Hardware decoders need not: a BirdDog Play initialises its
+    /// decoder once, when it connects, and after any format change — a different codec, a
+    /// different resolution — it shows NDI's "video decoder not found" card until its
+    /// decoder process is restarted by hand. Reconnecting is the only lever a sender has
+    /// to make that happen on its own.
+    var reconnectOnFormatChange = true
     /// Corrects sources that publish with the opposite vertical origin — Millumin 2 and
     /// other OpenGL Syphon servers arrive upside down. Applied to the NDI output, not
     /// just the preview.
@@ -203,6 +214,13 @@ final class Pipeline {
         let nameChanged = newConfig.ndiName != config.ndiName
 
         let rateChanged = newConfig.fpsCap != config.fpsCap
+        // What a decoder has to re-initialise for. The frame rate is in here because it
+        // changes the declared rate and, through the level VideoToolbox picks, the SPS
+        // itself — and because it was one of the changes the BirdDog needed a restart for.
+        let formatChanged = newConfig.codec != config.codec
+            || newConfig.resolution != config.resolution
+            || newConfig.h264Profile != config.h264Profile
+            || rateChanged
         queue.sync {
             let needsRebuild = newConfig.codec != config.codec
                 || newConfig.resolution != config.resolution
@@ -225,16 +243,51 @@ final class Pipeline {
         }
 
         // The NDI source name is fixed at sender creation, so it is the one change that
-        // has to bounce the sender.
-        //
-        // A codec change deliberately does *not*. Bouncing was tried, on the theory that
-        // changing the FourCC underneath connected receivers caused corruption: measured,
-        // it cost about 3 s of reconnect downtime and fixed nothing, because the first
-        // frame of the new codec is already an IDR carrying its parameter sets. Switching
-        // codecs is this app's main job; it should stay instant.
+        // always has to bounce the sender.
         if nameChanged, let source = currentSource {
             try? start(source: source)
+            return
         }
+
+        // A format change bounces it too, unless asked not to.
+        //
+        // This was tried once before and reverted: on the theory that changing the FourCC
+        // underneath connected receivers caused corruption, it measured as ~3 s of
+        // reconnect downtime that fixed nothing, because the first frame of the new codec
+        // is already an IDR carrying its parameter sets. That reasoning held for software
+        // receivers and only for them. A BirdDog Play initialises its decoder when it
+        // connects and never again, so every format change left it showing NDI's "video
+        // decoder not found" card until its decoder was restarted by hand — including a
+        // plain resolution change within the same codec. Reconnecting is the only lever a
+        // sender has to make a receiver re-initialise.
+        if formatChanged, config.reconnectOnFormatChange {
+            restartSender()
+        }
+    }
+
+    /// Re-creates the sender and the delivery monitor, leaving the input and the capture
+    /// running. Cheaper and far less disruptive than a full `start()`, which would also
+    /// tear down the Syphon client or the camera.
+    private func restartSender() {
+        let name = config.ndiName
+        monitor?.stop()
+        monitor = nil
+        queue.sync {
+            sender?.stop()
+            sender = NDISender(name: name)
+            // The new sender has no receivers yet and the encoder must open the new
+            // stream with an IDR, so start it clean.
+            encoder?.stop()
+            encoder = nil
+            previewEncoder?.stop()
+            previewEncoder = nil
+            previewPool = nil
+            pendingEncodes.removeAll()
+            previewLastKeyframe = 0
+            startTime = CFAbsoluteTimeGetCurrent()
+            nextSendDeadline = 0
+        }
+        monitor = NDIDeliveryMonitor(sourceName: name)
     }
 
     /// Writes the next outgoing frame to `url`. Encoding it stalls one frame, which is

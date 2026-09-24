@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     private let bitrateField = NSTextField()
     private let alphaCheckbox = NSButton(checkboxWithTitle: "Ignore alpha (send BGRX)", target: nil, action: nil)
     private let autostartCheckbox = NSButton(checkboxWithTitle: "Start automatically on launch", target: nil, action: nil)
+    private let reconnectCheckbox = NSButton(checkboxWithTitle: "Reconnect receivers when the format changes", target: nil, action: nil)
     private let startButton = NSButton(title: "Start", target: nil, action: nil)
     /// Which NDI library is loaded. Reported in About rather than occupying a line above
     /// the source picker, where it was the first thing read and the least often needed.
@@ -419,6 +420,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         autostartCheckbox.toolTip = "Reconnects to the saved input as soon as it appears, so the app can be left in Login Items."
         stack.addArrangedSubview(autostartCheckbox)
 
+        reconnectCheckbox.target = self
+        reconnectCheckbox.action = #selector(controlChanged)
+        // Default on: a receiver that does not need it loses a second or two on a change it
+        // asked for, while one that does need it shows nothing at all without it.
+        reconnectCheckbox.state = UserDefaults.standard.object(forKey: "reconnectOnFormatChange") == nil
+            || UserDefaults.standard.bool(forKey: "reconnectOnFormatChange") ? .on : .off
+        reconnectCheckbox.toolTip = "Drops and re-makes the NDI sender when the codec, resolution, frame rate or profile changes, so receivers re-negotiate. Hardware decoders generally set their decoder up once when they connect and show nothing after a format change without this; software receivers follow a change on their own and only lose a second or two to the reconnect."
+        stack.addArrangedSubview(reconnectCheckbox)
+
         startButton.target = self
         startButton.action = #selector(toggleStreaming)
         startButton.keyEquivalent = "\r"
@@ -565,6 +575,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         let defaults = UserDefaults.standard
         var config = PipelineConfig()
         if let name = defaults.string(forKey: "ndiName"), !name.isEmpty { config.ndiName = name }
+        config.reconnectOnFormatChange = defaults.object(forKey: "reconnectOnFormatChange") == nil
+            || defaults.bool(forKey: "reconnectOnFormatChange")
         config.codec = NDICodec(rawValue: defaults.integer(forKey: "codec")) ?? .speedHQ
         selectedMaxHeight = defaults.integer(forKey: "resolutionMaxHeight")
         config.resolution = selectedMaxHeight > 0 ? .maxHeight(selectedMaxHeight) : .native
@@ -613,12 +625,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         config.orientation = FrameOrientation(rawValue: max(orientationPopup.indexOfSelectedItem, 0)) ?? .none
         config.allowHardwareEncoder = encoderPopup.indexOfSelectedItem == 0
         config.h264Profile = Encoder.Profile(rawValue: max(profilePopup.indexOfSelectedItem, 0)) ?? .high
+        config.reconnectOnFormatChange = reconnectCheckbox.state == .on
         return config
     }
 
     private func saveConfig(_ config: PipelineConfig) {
         let defaults = UserDefaults.standard
         defaults.set(config.ndiName, forKey: "ndiName")
+        defaults.set(config.reconnectOnFormatChange, forKey: "reconnectOnFormatChange")
         defaults.set(config.codec.rawValue, forKey: "codec")
         defaults.set(selectedMaxHeight, forKey: "resolutionMaxHeight")
         defaults.set(config.fpsCap, forKey: "fpsCap")
