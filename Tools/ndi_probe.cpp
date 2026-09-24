@@ -1,3 +1,4 @@
+#include <vector>
 // Verification tool: finds NDI sources and reports what one of them is actually putting
 // on the wire — resolution, rate, FourCC and, for HX, the exact compressed payload size.
 //
@@ -19,6 +20,87 @@
 // Lists the NAL unit types in an Annex B buffer. Counting the keyframe *flag* only shows
 // what the sender claimed; a receiver that has lost sync recovers only if the bitstream
 // really carries an IDR and the parameter sets to decode it.
+
+// Minimal Exp-Golomb reader over an SPS RBSP, enough for profile/level/chroma. The SDK
+// constrains exactly these three ("4:2:0 in Baseline, Main and High profiles up to level
+// 5.1"), and a receiver that refuses the stream outright reports no more than "decoder
+// not found", so they have to be read off the wire.
+struct BitReader {
+	const uint8_t* d; size_t n, pos = 0;
+	BitReader(const uint8_t* d_, size_t n_) : d(d_), n(n_) {}
+	uint32_t bit() { if (pos >= n * 8) return 0; uint32_t b = (d[pos >> 3] >> (7 - (pos & 7))) & 1; pos++; return b; }
+	uint32_t bits(int c) { uint32_t v = 0; while (c--) v = (v << 1) | bit(); return v; }
+	uint32_t ue() { int z = 0; while (!bit() && z < 32) z++; return z ? ((1u << z) - 1) + bits(z) : 0; }
+	int32_t se() { uint32_t k = ue(); return (k & 1) ? (int32_t)((k + 1) / 2) : -(int32_t)(k / 2); }
+};
+
+static const char* h264_profile_name(uint32_t p)
+{
+	switch (p) {
+		case 66:  return "Baseline";
+		case 77:  return "Main";
+		case 88:  return "Extended";
+		case 100: return "High";
+		case 110: return "High 10";
+		case 122: return "High 4:2:2";
+		case 244: return "High 4:4:4";
+		default:  return "unknown";
+	}
+}
+
+// Strips emulation-prevention bytes, then reads as far as chroma_format_idc.
+static void describe_h264_sps(const uint8_t* p, size_t len)
+{
+	// Find the SPS NAL (type 7) between Annex B start codes.
+	size_t i = 0, start = 0, size = 0;
+	while (i + 3 < len) {
+		if (p[i] == 0 && p[i+1] == 0 && p[i+2] == 1) {
+			size_t body = i + 3;
+			if (body < len && (p[body] & 0x1f) == 7) {
+				size_t end = body + 1;
+				while (end + 3 < len && !(p[end] == 0 && p[end+1] == 0 && p[end+2] == 1)) end++;
+				start = body + 1; size = (end + 3 < len ? end : len) - start;
+				break;
+			}
+			i = body;
+		} else i++;
+	}
+	if (!size) return;
+
+	std::vector<uint8_t> rbsp;
+	rbsp.reserve(size);
+	for (size_t k = 0; k < size; k++) {
+		if (k >= 2 && p[start+k] == 3 && p[start+k-1] == 0 && p[start+k-2] == 0) continue;
+		rbsp.push_back(p[start+k]);
+	}
+	if (rbsp.size() < 4) return;
+
+	const uint32_t profile_idc = rbsp[0];
+	const uint32_t level_idc   = rbsp[2];
+	BitReader r(rbsp.data(), rbsp.size());
+	r.bits(24);          // profile_idc, constraint flags, level_idc
+	r.ue();              // seq_parameter_set_id
+
+	const char* chroma = "4:2:0 (implied)";
+	if (profile_idc == 100 || profile_idc == 110 || profile_idc == 122 || profile_idc == 244 ||
+	    profile_idc == 44  || profile_idc == 83  || profile_idc == 86  || profile_idc == 118 ||
+	    profile_idc == 128 || profile_idc == 138 || profile_idc == 139 || profile_idc == 134) {
+		switch (r.ue()) {
+			case 0: chroma = "4:0:0 monochrome"; break;
+			case 1: chroma = "4:2:0"; break;
+			case 2: chroma = "4:2:2"; break;
+			case 3: chroma = "4:4:4"; break;
+			default: chroma = "reserved"; break;
+		}
+	}
+
+	printf("  SPS         profile %s (%u), level %.1f, chroma %s\n",
+	       h264_profile_name(profile_idc), profile_idc, level_idc / 10.0, chroma);
+	printf("              NDI accepts 4:2:0 Baseline/Main/High up to level 5.1%s\n",
+	       (profile_idc == 66 || profile_idc == 77 || profile_idc == 100) && level_idc <= 51
+	           ? " — this stream qualifies" : " — THIS STREAM DOES NOT QUALIFY");
+}
+
 static std::string nal_types(const uint8_t* data, uint32_t size, bool hevc)
 {
 	std::string out;
@@ -167,6 +249,8 @@ int main(int argc, char* argv[])
 						       packet->extra_data_size
 						           ? nal_types(payload + packet->data_size, packet->extra_data_size, hevc).c_str()
 						           : "none");
+						if (!hevc && keyframes == 1 && packet->extra_data_size)
+							describe_h264_sps(payload + packet->data_size, packet->extra_data_size);
 						fflush(stdout);
 					}
 				}

@@ -226,18 +226,30 @@ static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec, BOOL previ
 	packet.pts = pts;
 	packet.dts = dts;
 	packet.flags = keyframe ? 1 /* flags_keyframe */ : 0;
-	packet.data_size = size;
 	// Parameter sets belong only on keyframes; the SDK expects 0 elsewhere.
-	packet.extra_data_size = (keyframe && extra && extraSize) ? extraSize : 0;
+	const BOOL withParameterSets = (keyframe && extra && extraSize);
+	packet.extra_data_size = withParameterSets ? extraSize : 0;
+	// The parameter sets go in the bitstream *as well as* in extra_data, so data_size
+	// counts them. NDI's own HX2 reference sender does this — its keyframes carry
+	// [SPS][PPS][IDR] in the data and SPS/PPS again in extra_data — and a decoder handed
+	// only the elementary stream cannot determine the format without them. VideoToolbox
+	// emits them out-of-band only, so sending them the way it hands them over produced a
+	// stream that NDI's own software receivers decoded happily (they read extra_data)
+	// while a hardware decoder reported "video decoder not found".
+	packet.data_size = withParameterSets ? (extraSize + size) : size;
 
-	// Header, then bitstream, then parameter set — the order the SDK unpacks them in.
-	const uint8_t *blocks[4];
-	int sizes[4];
+	// Header, parameter sets, bitstream, parameter sets again — the layout the reference
+	// sender uses.
+	const uint8_t *blocks[5];
+	int sizes[5];
 	int n = 0;
 	blocks[n] = (const uint8_t *)&packet;  sizes[n] = (int)sizeof(packet);        n++;
+	if (withParameterSets) {
+		blocks[n] = (const uint8_t *)extra; sizes[n] = (int)extraSize;             n++;
+	}
 	blocks[n] = (const uint8_t *)data;     sizes[n] = (int)size;                  n++;
-	if (packet.extra_data_size) {
-		blocks[n] = (const uint8_t *)extra; sizes[n] = (int)packet.extra_data_size; n++;
+	if (withParameterSets) {
+		blocks[n] = (const uint8_t *)extra; sizes[n] = (int)extraSize;             n++;
 	}
 	blocks[n] = NULL; sizes[n] = 0;
 

@@ -694,6 +694,11 @@ None of these are part of the app; they exist to check it.
   which is how orientation and framing are checked at the far end of the chain rather than
   in the app's own preview. Timing is wall-clock; an earlier version counted a fixed
   interval per capture call and understated the frame rate by 5×.
+- `Tools/hxref/` — builds NDI's own HX2 reference senders from the Advanced SDK examples,
+  unmodified. The A/B is the point: a receiver that refuses our stream but accepts this one
+  indicts us; one that refuses both indicts the receiver. It is also the reference for what
+  a correct HX stream looks like on the wire, which is how the missing in-band parameter
+  sets were found.
 - `Tools/fit/fit_test` — pushes a frame with coloured edge markers (red left, blue right,
   green top, yellow bottom) through the real `FramePool`, then reports the exact column
   and row span of the result against the expected one, which edge each marker landed on,
@@ -782,6 +787,33 @@ Three things about it were only found by measuring:
   doubled the proxy's keyframe rate to 2.16/s.
 
 The proxy is skipped entirely for SpeedHQ, where NDI's own is correct.
+
+## Parameter sets go in the bitstream too, not only in extra_data
+
+VideoToolbox hands the SPS/PPS (H.264) or VPS/SPS/PPS (HEVC) over **out of band**, as a
+separate parameter-set object, and `NDIlib_compressed_packet_t` has an `extra_data_size`
+field that looks exactly like the place to put them. Doing only that produces a stream
+every software receiver decodes perfectly — NDI Monitor, QLab, Millumin — and that a
+hardware decoder rejects outright with NDI's canned *"video decoder not found"* frame.
+
+The tell is in NDI's own HX2 reference sender, built unmodified by `Tools/hxref/build.sh`.
+Probing it next to ours:
+
+| | keyframe `data` | `extra` |
+|---|---|---|
+| NDI reference | `[7(SPS) 8(PPS) 5(IDR)]` | `[7(SPS) 8(PPS)]` |
+| 2NDI, before | `[6(SEI) 5(IDR)]` | `[7(SPS) 8(PPS)]` |
+| 2NDI, after | `[7(SPS) 8(PPS) 6(SEI) 5(IDR)]` | `[7(SPS) 8(PPS)]` |
+
+The reference carries the parameter sets **both** ways. A receiver that decodes in software
+reads `extra_data` and never notices the difference; one that hands the elementary stream
+to a hardware decoder has nothing to describe the format with, and cannot start.
+
+So on a keyframe the scatter list is header, parameter sets, bitstream, parameter sets
+again, and `data_size` counts the in-band copy. Everything about this is invisible from any
+receiver on this machine, which is why the reference sender is worth keeping around: it is
+NDI's own code with NDI's own canned bitstream, so anything that refuses it is not our bug,
+and any way our stream differs from it is a lead.
 
 ## Measured end to end
 

@@ -22,3 +22,5 @@ Tools/soak/soak
 
 macOS/*.dSYM
 .DS_Store
+Tools/hxref/H264_ref
+Tools/hxref/HEVC_ref
