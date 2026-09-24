@@ -21,10 +21,31 @@ import CoreText
 /// generator stays cheap enough not to become the bottleneck it is meant to measure.
 final class TestPatternInput: VideoInput {
 
-    static let width = 1920
-    static let height = 1080
     static let fps = 60.0
-    static let displayName = "Test pattern — generated \(width)×\(height) \(Int(fps)) fps"
+
+    /// The sizes offered as separate inputs. 4K is here to exercise the paths that only
+    /// break at scale — encoder throughput, a decoder's resolution ceiling — without
+    /// needing another application to publish a 4K surface.
+    struct Preset {
+        let id: String
+        let width: Int
+        let height: Int
+        var displayName: String {
+            "Test pattern — generated \(width)×\(height) \(Int(TestPatternInput.fps)) fps"
+        }
+    }
+
+    // The 1080p id stays "test-pattern": it is what earlier versions saved as the selected
+    // source, and renaming it would silently lose that selection.
+    static let presets = [
+        Preset(id: "test-pattern", width: 1920, height: 1080),
+        Preset(id: "test-pattern-4k", width: 3840, height: 2160),
+    ]
+
+    static func preset(id: String) -> Preset { presets.first { $0.id == id } ?? presets[0] }
+
+    let width: Int
+    let height: Int
 
     /// Where the dial sits, as a fraction of height in CoreGraphics' y-up coordinates.
     private static let dialCentreFraction: CGFloat = 0.26
@@ -60,12 +81,15 @@ final class TestPatternInput: VideoInput {
 
     private(set) var isValid = false
 
-    init?(device: MTLDevice, frameHandler: @escaping () -> Void) {
+    init?(device: MTLDevice, preset: Preset = TestPatternInput.presets[0],
+          frameHandler: @escaping () -> Void) {
         guard let queue = device.makeCommandQueue() else { return nil }
         commandQueue = queue
         context = CIContext(mtlCommandQueue: queue, options: [.cacheIntermediates: false])
 
-        let width = Self.width, height = Self.height
+        let width = preset.width, height = preset.height
+        self.width = width
+        self.height = height
         guard let still = Self.drawStillFrame(width: width, height: height) else { return nil }
         background = CIImage(cgImage: still)
 
@@ -129,7 +153,7 @@ final class TestPatternInput: VideoInput {
         guard changed else { return }
 
         guard let image = Self.drawCaption("\(width) × \(height)",
-                                           width: Self.width, height: Self.height) else { return }
+                                           width: self.width, height: self.height) else { return }
 
         captionLock.lock()
         caption = CIImage(cgImage: image)
@@ -166,8 +190,8 @@ final class TestPatternInput: VideoInput {
         let index = (current + 1) % outputs.count
         lock.unlock()
 
-        let centre = CGAffineTransform(translationX: CGFloat(Self.width) / 2,
-                                       y: CGFloat(Self.height) * Self.dialCentreFraction)
+        let centre = CGAffineTransform(translationX: CGFloat(width) / 2,
+                                       y: CGFloat(height) * Self.dialCentreFraction)
         let rotated = hand.transformed(by: CGAffineTransform(rotationAngle: angle).concatenating(centre))
         // CIImage(cgImage:) lands in CoreImage's y-up space while the renderer writes
         // texture row 0 as its bottom, so a CGImage-sourced frame arrives inverted. The
@@ -181,11 +205,11 @@ final class TestPatternInput: VideoInput {
         if let caption { composed = caption.composited(over: composed) }
         composed = rotated.composited(over: composed)
         if blinkOn { composed = blink.composited(over: composed) }
-        composed = composed.transformed(by: CGAffineTransform(1, 0, 0, -1, 0, CGFloat(Self.height)))
+        composed = composed.transformed(by: CGAffineTransform(1, 0, 0, -1, 0, CGFloat(height)))
 
         guard let buffer = commandQueue.makeCommandBuffer() else { return }
         context.render(composed, to: outputs[index], commandBuffer: buffer,
-                       bounds: CGRect(x: 0, y: 0, width: Self.width, height: Self.height),
+                       bounds: CGRect(x: 0, y: 0, width: width, height: height),
                        colorSpace: CGColorSpaceCreateDeviceRGB())
         buffer.commit()
         // The consumer reads this texture directly, so it must be finished first.

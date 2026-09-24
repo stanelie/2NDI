@@ -85,7 +85,11 @@ int main(int argc, char* argv[])
 	if (!target) { printf("\nno source matching \"%s\"\n", argv[1]); NDIlib_find_destroy(finder); NDIlib_destroy(); return 1; }
 
 	const int seconds = (argc > 2) ? atoi(argv[2]) : 5;
-	const char* png_path = (argc > 3) ? argv[3] : nullptr;
+	const char* png_path = (argc > 3 && argv[3][0]) ? argv[3] : nullptr;
+	// 4th argument "low" asks for the proxy stream. For SpeedHQ the NDI library generates
+	// that itself; for compressed (HX) senders the application must supply it, so this is
+	// how to find out whether we do.
+	const bool want_low = (argc > 4) && (strcmp(argv[4], "low") == 0);
 	printf("\nreceiving from \"%s\" for %d s…\n", target->p_ndi_name, seconds);
 
 	NDIlib_recv_create_v3_t recv_desc;
@@ -95,7 +99,8 @@ int main(int argc, char* argv[])
 	// for BGRA and gives up the FourCC reporting.
 	recv_desc.color_format = png_path ? NDIlib_recv_color_format_BGRX_BGRA
 	                                  : (NDIlib_recv_color_format_e)NDIlib_recv_color_format_ex_compressed_v4;
-	recv_desc.bandwidth = NDIlib_recv_bandwidth_highest;
+	recv_desc.bandwidth = want_low ? NDIlib_recv_bandwidth_lowest : NDIlib_recv_bandwidth_highest;
+	printf("requesting %s bandwidth\n", want_low ? "LOWEST (proxy)" : "highest");
 	NDIlib_recv_instance_t recv = NDIlib_recv_create_v3(&recv_desc);
 	if (!recv) { printf("could not create receiver\n"); return 1; }
 

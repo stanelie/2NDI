@@ -190,11 +190,15 @@ static NSString *DylibPathForBackend(NDIBackend backend)
 	IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
 }
 
-static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec)
+static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec, BOOL preview)
 {
 	switch (codec) {
-		case NDICodecHEVC: return (NDIlib_FourCC_video_type_e)NDIlib_FourCC_video_type_ex_HEVC_highest_bandwidth;
-		case NDICodecH264: return (NDIlib_FourCC_video_type_e)NDIlib_FourCC_video_type_ex_H264_highest_bandwidth;
+		case NDICodecHEVC: return (NDIlib_FourCC_video_type_e)(preview
+			? NDIlib_FourCC_video_type_ex_HEVC_lowest_bandwidth
+			: NDIlib_FourCC_video_type_ex_HEVC_highest_bandwidth);
+		case NDICodecH264: return (NDIlib_FourCC_video_type_e)(preview
+			? NDIlib_FourCC_video_type_ex_H264_lowest_bandwidth
+			: NDIlib_FourCC_video_type_ex_H264_highest_bandwidth);
 		default:           return NDIlib_FourCC_type_BGRX;
 	}
 }
@@ -211,6 +215,7 @@ static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec)
             frameRateN:(NSInteger)frameRateN
             frameRateD:(NSInteger)frameRateD
                  codec:(NDICodec)codec
+               preview:(BOOL)preview
 {
 	if (!_send || !g.send_scatter || !data || size == 0) return;
 
@@ -239,7 +244,7 @@ static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec)
 	NDIlib_video_frame_v2_t frame = {0};
 	frame.xres = (int)xres;
 	frame.yres = (int)yres;
-	frame.FourCC = VideoFourCCForCodec(codec);
+	frame.FourCC = VideoFourCCForCodec(codec, preview);
 	frame.frame_rate_N = (int)frameRateN;
 	frame.frame_rate_D = (int)frameRateD;
 	frame.picture_aspect_ratio = (float)xres / (float)yres;
@@ -252,13 +257,14 @@ static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec)
 }
 
 - (BOOL)keyframeRequiredForCodec:(NDICodec)codec xres:(NSInteger)xres yres:(NSInteger)yres
+                         preview:(BOOL)preview
 {
 	if (!_send || !g.send_keyframe_required) return NO;
 
 	NDIlib_video_frame_v2_t frame = {0};
 	frame.xres = (int)xres;
 	frame.yres = (int)yres;
-	frame.FourCC = VideoFourCCForCodec(codec);
+	frame.FourCC = VideoFourCCForCodec(codec, preview);
 	return g.send_keyframe_required(_send, &frame);
 }
 
@@ -273,7 +279,7 @@ static NDIlib_FourCC_video_type_e VideoFourCCForCodec(NDICodec codec)
 	NDIlib_video_frame_v2_t frame = {0};
 	frame.xres = (int)xres;
 	frame.yres = (int)yres;
-	frame.FourCC = VideoFourCCForCodec(codec);
+	frame.FourCC = VideoFourCCForCodec(codec, NO);
 	frame.frame_rate_N = (int)frameRateN;
 	frame.frame_rate_D = (int)frameRateD;
 	frame.frame_format_type = NDIlib_frame_format_type_progressive;

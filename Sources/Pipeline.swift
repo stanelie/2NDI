@@ -58,6 +58,27 @@ final class Pipeline {
     private var encoder: Encoder?
     private var pool: FramePool?
 
+    // The Advanced SDK makes a compressed sender responsible for its own low-bandwidth
+    // proxy: it synthesises one only for the formats it encodes itself. Without this, a
+    // receiver that asks for NDIlib_recv_bandwidth_lowest — as some hardware decoders do —
+    // gets no video at all, while NDI Monitor and the like (which ask for highest) work.
+    // Measured with Tools/ndi_probe: HX delivered 0 frames at lowest, SpeedHQ delivered a
+    // 640x360 proxy the library had made on its own.
+    private var previewEncoder: Encoder?
+    private var previewPool: FramePool?
+    private var previewFrameCounter = 0
+    private var previewEncodesInFlight = 0
+    private var previewEligible = 0
+    private var previewBlocked = 0
+    private var previewNoFrame = 0
+    private var previewSent = 0
+    private var previewEncoderFailures = 0
+    private var previewLastKeyframe: CFAbsoluteTime = 0
+    private let previewDebug = ProcessInfo.processInfo.environment["SYPHONNDI_PREVIEW_DEBUG"] != nil
+    /// SDK ceiling for the proxy stream.
+    static let previewMaxFPS = 45.0
+    static let previewMaxEncodesInFlight = 4
+
     // Guards against the pipeline falling behind the source: rather than queueing frames
     // (which would inflate exactly the latency we are trying to measure) a frame that
     // arrives while another is in flight is dropped and counted.
@@ -117,7 +138,10 @@ final class Pipeline {
         case .camera:
             built = CameraInput(deviceID: source.id, device: device) { [weak self] in self?.handleFrame() }
         case .testPattern:
-            built = TestPatternInput(device: device) { [weak self] in self?.handleFrame() }
+            built = TestPatternInput(device: device,
+                                     preset: TestPatternInput.preset(id: source.id)) { [weak self] in
+                self?.handleFrame()
+            }
         }
         guard let built else {
             self.sender = nil
@@ -150,6 +174,9 @@ final class Pipeline {
             encoder?.stop()
             encoder = nil
             pool = nil
+            previewEncoder?.stop()
+            previewEncoder = nil
+            previewPool = nil
             pendingEncodes.removeAll()
         }
         input?.stop()
@@ -185,6 +212,9 @@ final class Pipeline {
                 encoder?.stop()
                 encoder = nil
                 pool = nil
+                previewEncoder?.stop()
+                previewEncoder = nil
+                previewPool = nil
                 pendingEncodes.removeAll()
             } else if let encoder, newConfig.bitrateMbps > 0 {
                 encoder.updateBitrate(Int(newConfig.bitrateMbps * 1_000_000))
@@ -307,6 +337,8 @@ final class Pipeline {
         if previous > 0, abs(nominalFPS - previous) / previous > 0.25 {
             encoder?.stop()
             encoder = nil
+            previewEncoder?.stop()
+            previewEncoder = nil
         }
     }
 
@@ -378,6 +410,9 @@ final class Pipeline {
             pool = FramePool(device: device, commandQueue: commandQueue, width: outWidth, height: outHeight)
             encoder?.stop()
             encoder = nil
+            previewEncoder?.stop()
+            previewEncoder = nil
+            previewPool = nil
         }
         guard let pool else { releaseCaptureSlot(); return }
 
@@ -399,6 +434,142 @@ final class Pipeline {
             }
         }
         if !submitted { releaseCaptureSlot() }
+
+        // The proxy stream rides alongside, from the same source texture so it picks up
+        // the orientation but not the output resolution cap.
+        if config.codec != .speedHQ { sendPreview(from: sourceTexture, rate: rate) }
+    }
+
+    /// The low-bandwidth stream the Advanced SDK requires a compressed sender to provide
+    /// itself: progressive, longest dimension 640, and no faster than 45 Hz.
+    private func sendPreview(from sourceTexture: MTLTexture, rate: (n: Int, d: Int)) {
+        guard let sender else { return }
+
+        let fps = Double(rate.n) / Double(max(rate.d, 1))
+        // The SDK explicitly allows just dropping frames to reach the preview rate.
+        let stride = max(1, Int((fps / Self.previewMaxFPS).rounded(.up)))
+        previewFrameCounter += 1
+        guard previewFrameCounter % stride == 0 else { return }
+
+        let (width, height) = Self.previewSize(sourceWidth: sourceTexture.width,
+                                               sourceHeight: sourceTexture.height)
+        guard width > 0, height > 0 else { return }
+
+        if previewPool == nil || previewPool?.width != width || previewPool?.height != height {
+            previewPool = FramePool(device: device, commandQueue: commandQueue,
+                                    width: width, height: height)
+            previewEncoder?.stop()
+            previewEncoder = nil
+        }
+        guard let previewPool else { return }
+
+        let previewRate = (n: rate.n, d: rate.d * stride)
+
+        if previewEncoder == nil {
+            let target = sender.targetBitRate(for: config.codec, xres: width, yres: height,
+                                              frameRateN: previewRate.n, frameRateD: previewRate.d)
+            previewEncoder = Encoder(width: width,
+                                     height: height,
+                                     codec: config.codec == .hevc ? .hevc : .h264,
+                                     bitrate: target > 0 ? target : 2_000_000,
+                                     fps: fps / Double(stride),
+                                     keyframeIntervalSeconds: Self.keyframeIntervalSeconds,
+                                     allowHardware: config.allowHardwareEncoder,
+                                     profile: config.h264Profile)
+            previewEncoder?.onFrame = { [weak self] encoded in
+                self?.deliverPreview(encoded, width: width, height: height, rate: previewRate)
+            }
+        }
+        guard let previewEncoder else {
+            if previewDebug, previewEncoderFailures == 0 {
+                previewEncoderFailures += 1
+                FileHandle.standardError.write("preview: encoder refused at \(width)x\(height)\n".data(using: .utf8)!)
+            }
+            return
+        }
+
+        flightLock.lock()
+        previewEligible += 1
+        // Not 1: HEVC rejects MaxFrameDelayCount = 0 on this hardware and buffers its
+        // first frame, so a depth-1 gate deadlocked the proxy outright — one frame in,
+        // none ever out, every later frame refused. Measured: sent 0 over 300 eligible.
+        let blocked = previewEncodesInFlight >= Self.previewMaxEncodesInFlight
+        if blocked { previewBlocked += 1 }
+        let snapshot = (previewEligible, previewBlocked, previewNoFrame, previewSent, previewEncodesInFlight)
+        if !blocked { previewEncodesInFlight += 1 }
+        flightLock.unlock()
+        if previewDebug, snapshot.0 % 60 == 0 {
+            FileHandle.standardError.write("preview: eligible \(snapshot.0) blocked \(snapshot.1) nopoolframe \(snapshot.2) sent \(snapshot.3) inflight \(snapshot.4) hw \(previewEncoder.isHardware)\n".data(using: .utf8)!)
+        }
+        if blocked { return }
+        // The proxy has its own receivers and its own IDR requests; without asking for
+        // them separately a receiver that joined only the proxy waited out the whole GOP
+        // (measured: 0.83 s of black before the first keyframe).
+        //
+        // The encoder's own GOP is counted in frames, which only matches the wall clock
+        // while the proxy keeps up. When it cannot — HEVC at 640x360 measures 105 ms per
+        // frame on Intel graphics — a 30-frame GOP stretches to many seconds and a joining
+        // receiver sees nothing at all, so the interval is enforced here in time instead.
+        let now = CFAbsoluteTimeGetCurrent()
+        // A safety net at twice the interval, not a second scheduler: the encoder's own
+        // GOP already does this correctly while the proxy keeps up, and forcing on top of
+        // it doubled the proxy's keyframe rate (measured 2.16/s against a wanted 1/s).
+        let keyframeOverdue = now - previewLastKeyframe >= Self.keyframeIntervalSeconds * 2
+        let forceKeyframe = keyframeOverdue
+            || sender.keyframeRequired(for: config.codec, xres: width, yres: height, preview: true)
+        if forceKeyframe { previewLastKeyframe = now }
+        let pts = Int64((CFAbsoluteTimeGetCurrent() - startTime) * 10_000_000)
+        let submitted = previewPool.copy(from: sourceTexture, orientation: config.orientation) { [weak self] frame, _ in
+            guard let self else { return }
+            self.queue.async {
+                previewEncoder.encode(pixelBuffer: frame.pixelBuffer, pts: pts, forceKeyframe: forceKeyframe)
+            }
+        }
+        if !submitted {
+            flightLock.lock()
+            previewNoFrame += 1
+            previewEncodesInFlight = max(0, previewEncodesInFlight - 1)
+            flightLock.unlock()
+        }
+    }
+
+    private func deliverPreview(_ encoded: EncodedFrame, width: Int, height: Int, rate: (n: Int, d: Int)) {
+        defer {
+            flightLock.lock()
+            previewEncodesInFlight = max(0, previewEncodesInFlight - 1)
+            flightLock.unlock()
+        }
+        queue.async { [weak self] in
+            guard let self, let sender = self.sender, !encoded.data.isEmpty else { return }
+            encoded.data.withUnsafeBytes { dataBytes in
+                encoded.parameterSets.withUnsafeBytes { extraBytes in
+                    sender.sendCompressed(dataBytes.baseAddress!,
+                                          size: UInt32(encoded.data.count),
+                                          extra: extraBytes.baseAddress,
+                                          extraSize: UInt32(encoded.parameterSets.count),
+                                          keyframe: encoded.isKeyframe,
+                                          pts: encoded.pts,
+                                          dts: encoded.dts,
+                                          xres: width,
+                                          yres: height,
+                                          frameRateN: rate.n,
+                                          frameRateD: rate.d,
+                                          codec: self.config.codec,
+                                          preview: true)
+                    self.previewSent += 1
+                }
+            }
+        }
+    }
+
+    /// Longest dimension 640, aspect preserved, both dimensions even for the encoder.
+    static func previewSize(sourceWidth: Int, sourceHeight: Int) -> (width: Int, height: Int) {
+        guard sourceWidth > 0, sourceHeight > 0 else { return (0, 0) }
+        let scale = 640.0 / Double(max(sourceWidth, sourceHeight))
+        if scale >= 1 { return (sourceWidth & ~1, sourceHeight & ~1) }
+        let w = max(2, Int((Double(sourceWidth) * scale).rounded())) & ~1
+        let h = max(2, Int((Double(sourceHeight) * scale).rounded())) & ~1
+        return (w, h)
     }
 
     /// Runs once the GPU has produced the frame.
@@ -492,7 +663,7 @@ final class Pipeline {
         flightLock.unlock()
 
         // The SDK tells us when a receiver has joined or lost sync and needs an IDR.
-        let forceKeyframe = sender.keyframeRequired(for: config.codec, xres: width, yres: height)
+        let forceKeyframe = sender.keyframeRequired(for: config.codec, xres: width, yres: height, preview: false)
         let pts = Int64((CFAbsoluteTimeGetCurrent() - startTime) * 10_000_000)
 
         pendingEncodes[pts] = (captureStart, gpuMs)
@@ -528,7 +699,8 @@ final class Pipeline {
                                           yres: height,
                                           frameRateN: rate.n,
                                           frameRateD: rate.d,
-                                          codec: self.config.codec)
+                                          codec: self.config.codec,
+                                          preview: false)
                 }
             }
             let now = CFAbsoluteTimeGetCurrent()

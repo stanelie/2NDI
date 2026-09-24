@@ -40,6 +40,11 @@ typedef NS_ENUM(NSInteger, NDICodec) {
 
 // HX path. data is Annex B; extra is the SPS/PPS (H.264) or VPS/SPS/PPS (HEVC)
 // parameter set, required on keyframes and ignored otherwise.
+//
+// preview marks the frame as the low-bandwidth stream. The Advanced SDK requires a
+// compressed sender to supply both: it only synthesises a proxy for the formats it
+// encodes itself (SpeedHQ), so a receiver asking for NDIlib_recv_bandwidth_lowest gets
+// nothing at all from a program-only HX sender.
 - (void)sendCompressed:(const void *)data
                   size:(uint32_t)size
                  extra:(nullable const void *)extra
@@ -51,11 +56,13 @@ typedef NS_ENUM(NSInteger, NDICodec) {
                   yres:(NSInteger)yres
             frameRateN:(NSInteger)frameRateN
             frameRateD:(NSInteger)frameRateD
-                 codec:(NDICodec)codec;
+                 codec:(NDICodec)codec
+               preview:(BOOL)preview;
 
 // Receivers ask for an IDR through the SDK; poll this and force one when it goes YES.
 - (BOOL)keyframeRequiredForCodec:(NDICodec)codec xres:(NSInteger)xres yres:(NSInteger)yres
-	NS_SWIFT_NAME(keyframeRequired(for:xres:yres:));
+                         preview:(BOOL)preview
+	NS_SWIFT_NAME(keyframeRequired(for:xres:yres:preview:));
 
 // NDI's own view of a sensible bit rate for this format, in bits/sec. Used both to
 // seed the encoder and as the reference figure in the stats panel.

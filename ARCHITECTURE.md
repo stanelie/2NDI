@@ -731,6 +731,58 @@ None of these are part of the app; they exist to check it.
   when the first capture returns a status change; the `lodepng_encode_file` call that
   defines row order is untouched.
 
+## An HX sender must send its own proxy stream
+
+NDI carries two streams per source: the program stream, and a low-bandwidth proxy a
+receiver can ask for with `NDIlib_recv_bandwidth_lowest`. For the formats NDI encodes
+itself, it builds that proxy for you. For compressed passthrough it does not — the
+Advanced SDK documentation is explicit:
+
+> It is important to always submit both a program stream and a preview stream to the SDK.
+> The program stream should be the full resolution video stream. The preview stream should
+> always be progressive, have its longest dimension as 640 pixels, and a frame rate that
+> does not exceed 45 Hz.
+
+Until this was implemented the app sent only the program stream, and the failure was
+invisible from every receiver used to test it. Measured with `Tools/ndi_probe`:
+
+| sender | receiver asks | delivered |
+|---|---|---|
+| SpeedHQ | highest | 1920×1080 `shq2` |
+| SpeedHQ | lowest  | 640×360 `shq2` — built by NDI, not by us |
+| H.264 HX | highest | 1920×1080 `H264` |
+| H.264 HX | lowest  | **nothing at all** |
+
+NDI Monitor, QLab and Millumin all ask for `highest`, so all three looked correct. A
+receiver that asks for `lowest` got a source that appeared in the directory, connected,
+and then produced no video — which is what a hardware decoder set to low bandwidth would
+show.
+
+The proxy is generated from the same source texture as the program frame, so it picks up
+the orientation but not the output resolution cap, then scaled to 640 on its longest
+dimension and encoded by a second `VTCompressionSession`.
+
+Three things about it were only found by measuring:
+
+- **The proxy needs its own keyframe requests.** `NDIlib_send_is_keyframe_required` takes a
+  frame descriptor including the FourCC, so it answers per stream. Polling it only for the
+  program stream left a proxy-only receiver waiting out the whole GOP — 0.83 s of nothing
+  before the first IDR, against 0.04 s once asked for separately.
+
+- **A depth-1 in-flight gate deadlocks HEVC.** VideoToolbox rejects
+  `MaxFrameDelayCount = 0` for HEVC on this hardware (status -12900), so the session
+  buffers its first frame instead of emitting it. With one encode allowed in flight, that
+  frame never came back, the counter never decremented, and every later frame was refused:
+  300 frames eligible, 0 sent, in flight stuck at 1 forever. The gate is 4.
+
+- **A frame-counted GOP is not a one-second GOP.** The encoder's keyframe interval is set
+  in frames. That matches the wall clock only while the proxy keeps up; when it cannot, the
+  interval stretches and a joining receiver sees nothing. There is a wall-clock safety net
+  at twice the interval — set at exactly the interval it fought the encoder's own GOP and
+  doubled the proxy's keyframe rate to 2.16/s.
+
+The proxy is skipped entirely for SpeedHQ, where NDI's own is correct.
+
 ## Measured end to end
 
 Against `syphon_pattern` at 1280 × 720 / ~46 fps, receiving with `ndi_probe`:

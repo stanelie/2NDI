@@ -57,9 +57,10 @@ struct InputSource: Equatable {
         let cameras = CameraInput.availableCameras().map {
             InputSource(kind: .camera, id: $0.id, displayName: "Camera — \($0.name)", syphonSource: nil)
         }
-        // Last, so it never displaces a real source as the default selection.
-        let generated = InputSource(kind: .testPattern, id: "test-pattern",
-                                    displayName: TestPatternInput.displayName, syphonSource: nil)
-        return syphon + cameras + [generated]
+        // Last, so they never displace a real source as the default selection.
+        let generated = TestPatternInput.presets.map {
+            InputSource(kind: .testPattern, id: $0.id, displayName: $0.displayName, syphonSource: nil)
+        }
+        return syphon + cameras + generated
     }
 }
