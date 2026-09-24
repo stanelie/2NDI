@@ -108,6 +108,22 @@ cp "$PROJ/Resources/Info.plist" "$APP/Contents/Info.plist"
 mkdir -p "$APP/Contents/Resources"
 cp "$PROJ/Resources/AppIcon.icns" "$APP/Contents/Resources/"
 
+# Stamp the version from git rather than trusting a number in the plist, which would drift
+# from the tags the moment one was forgotten. The build string carries the commit, and a
+# "+" when the working tree had uncommitted changes — a diagnostic tool whose own build
+# cannot be identified is a nuisance when a measurement has to be reproduced later.
+# Outside a checkout the plist's own values stand.
+VERSION=$(git -C "$PROJ" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+COMMIT=$(git -C "$PROJ" rev-parse --short HEAD 2>/dev/null || true)
+if [ -n "$COMMIT" ] && ! git -C "$PROJ" diff --quiet HEAD 2>/dev/null; then COMMIT="$COMMIT+"; fi
+if [ -n "$VERSION" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist" >/dev/null
+fi
+if [ -n "$COMMIT" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $COMMIT" "$APP/Contents/Info.plist" >/dev/null
+fi
+echo "==> Version ${VERSION:-from plist} (${COMMIT:-no git})"
+
 # Finder litters .DS_Store inside bundles, and codesign seals them. A sealed .DS_Store
 # breaks the signature the moment Finder rewrites it on another machine, which Gatekeeper
 # reports only as "the application can't be opened".

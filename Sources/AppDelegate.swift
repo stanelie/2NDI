@@ -991,6 +991,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
 
     // MARK: - Misc
 
+    /// Where the source and the releases live. Shown in About and opened from it, because
+    /// the build someone is running is the first thing worth pinning down when a
+    /// measurement has to be reproduced.
+    private static let repositoryURL = URL(string: "https://github.com/stanelie/2NDI")!
+
+    /// "0.3.0 (a80ca9c)", or with a trailing "+" on the commit when the build came from a
+    /// working tree with uncommitted changes. build.sh stamps both from git.
+    private static var versionDescription: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String
+        guard let build, !build.isEmpty, build != short else { return short }
+        return "\(short) (\(build))"
+    }
+
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "2NDI"
@@ -999,9 +1014,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         SpeedHQ or HX, with per-frame \
         timings for comparing the two.
 
+        Version \(Self.versionDescription)
+        \(Self.repositoryURL.absoluteString)
+
         \(backendDescription)
         """
-        alert.runModal()
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "View on GitHub")
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(Self.repositoryURL)
+        }
     }
 
     private func presentError(_ message: String) {
