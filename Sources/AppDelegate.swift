@@ -42,6 +42,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     private var snapshotPath: URL?
     private var lastOrientationKey: String?
     private var pendingResume = false
+    /// Set when the user stops the stream themselves, cleared when they start it again.
+    ///
+    /// Automatic starting is driven by Syphon's announce/retire notifications, which fire
+    /// whenever *any* application on the machine starts or stops publishing — so without
+    /// this, pressing Stop lasted only until some unrelated app opened a Syphon output,
+    /// and the stream came back on its own with nobody touching it. The stop a person
+    /// performs has to outrank a setting about what to do on launch.
+    ///
+    /// Deliberately *not* set when the stream stops because its input went away: resuming
+    /// when the host app comes back is the whole point of the autostart setting.
+    private var userStoppedStream = false
+    /// Autostart's one-shot companion is only meant to carry a stream across a relaunch,
+    /// which takes a second or two. Left unbounded it stayed armed for the whole session
+    /// and could fire hours later, off an unrelated Syphon announcement.
+    private static let resumeWindow: TimeInterval = 30
+    private let launchedAt = Date()
     private var deliveryFailureReported = false
     private var deliveredPerSecond = 0
     private var bannerZeroHeight: NSLayoutConstraint!
@@ -537,7 +553,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
 
         // With autostart on, the app waits for its saved source rather than requiring a
         // click — the host app is often launched after this one.
-        if !pipeline.isRunning, pendingResume || UserDefaults.standard.bool(forKey: "autostart") {
+        if pendingResume, Date().timeIntervalSince(launchedAt) > Self.resumeWindow {
+            pendingResume = false
+        }
+        if !pipeline.isRunning, !userStoppedStream,
+           pendingResume || UserDefaults.standard.bool(forKey: "autostart") {
             // SYPHONNDI_SOURCE picks the source by name for a scripted or login-item
             // launch, where the saved UUID from a previous session may no longer exist
             // (Syphon UUIDs are per-run, not per-output).
@@ -737,7 +757,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     // MARK: - Streaming
 
     @objc private func toggleStreaming() {
-        pipeline.isRunning ? stopStreaming() : startStreaming()
+        if pipeline.isRunning {
+            userStoppedStream = true
+            pendingResume = false
+            stopStreaming()
+        } else {
+            userStoppedStream = false
+            startStreaming()
+        }
     }
 
     private func startStreaming() {
