@@ -17,12 +17,21 @@ let unpaced = arguments.count > 5 && arguments[5] == "max"
 
 let wantHEVC = ProcessInfo.processInfo.environment["ENC_CODEC"]?.lowercased() == "hevc"
 let allowHardware = ProcessInfo.processInfo.environment["ENC_SOFTWARE"] != "1"
+// ENC_PROFILE=baseline|main|high, to measure what the profile costs the *encoder* —
+// "cheapest to decode" says nothing about that.
+let profile: Encoder.Profile = {
+    switch ProcessInfo.processInfo.environment["ENC_PROFILE"]?.lowercased() {
+    case "baseline": return .baseline
+    case "main":     return .main
+    default:         return .high
+    }
+}()
 guard let encoder = Encoder(width: width, height: height, codec: wantHEVC ? .hevc : .h264,
                             bitrate: 8_000_000, fps: 30, keyframeIntervalSeconds: 1,
-                            allowHardware: allowHardware) else {
+                            allowHardware: allowHardware, profile: profile) else {
     print("encoder create FAILED"); exit(1)
 }
-print("codec=\(wantHEVC ? "hevc" : "h264") \(width)x\(height) hardware=\(encoder.isHardware) (requested hw: \(allowHardware))")
+print("codec=\(wantHEVC ? "hevc" : "h264") \(width)x\(height) profile=\(profile) hardware=\(encoder.isHardware) (requested hw: \(allowHardware))")
 let started = Date()
 
 var received = 0, keyframes = 0, bytes = 0

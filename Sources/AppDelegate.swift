@@ -15,7 +15,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     private let resolutionPopup = NSPopUpButton()
     private let fpsCapPopup = NSPopUpButton()
     private let orientationPopup = NSPopUpButton()
-    private let profilePopup = NSPopUpButton()
     private let encoderPopup = NSPopUpButton()
     private let bitrateField = NSTextField()
     private let alphaCheckbox = NSButton(checkboxWithTitle: "Ignore alpha (send BGRX)", target: nil, action: nil)
@@ -288,6 +287,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     /// How long delivery must be dead before the banner. A couple of seconds of nothing is
     /// normal at startup or across a codec change; five is well past any of that and still
     /// fast enough to catch it live.
+    /// The H.264 profile everything is encoded at, program stream and proxy alike.
+    ///
+    /// Main rather than Baseline or High, and no longer a user choice. Measured on the
+    /// encoder — six interleaved rounds at 1080p, hardware encoder — Main is the fastest
+    /// of the three (124.9 fps against Baseline's 117.4 and High's 111.0) and produces
+    /// ~20% fewer bits than Baseline, which forbids CABAC and so falls back to CAVLC.
+    /// Baseline being "cheapest to decode" says nothing about encode cost, and it was not
+    /// cheapest there.
+    ///
+    /// Safe on the hardware this is aimed at: NDI's own HX2 reference sender is Main
+    /// profile level 4.0, and a BirdDog Play decodes that correctly.
+    ///
+    /// `Encoder.Profile` and its plumbing stay, so this can become a setting again by
+    /// putting the picker back.
+    static let fixedH264Profile = Encoder.Profile.main
+
     private static let deliveryDeadThreshold = 5
 
     /// The certain check. Not "how long has this been running" but "is anything actually
@@ -414,11 +429,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         orientationPopup.toolTip = "Syphon does not say which way up a source is. OpenGL servers such as Millumin 2 publish upside down."
         stack.addArrangedSubview(row("Image orientation", orientationPopup))
 
-        profilePopup.addItems(withTitles: Encoder.Profile.allCases.map(\.label))
-        profilePopup.target = self
-        profilePopup.action = #selector(controlChanged)
-        profilePopup.toolTip = "H.264 only. Baseline has no CABAC and no B-frames, so it is the cheapest for a receiver to decode."
-        stack.addArrangedSubview(row("H.264 profile", profilePopup))
 
         encoderPopup.addItems(withTitles: ["Hardware (preferred)", "Software (force)"])
         encoderPopup.target = self
@@ -619,7 +629,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         config.orientation = FrameOrientation(rawValue: defaults.integer(forKey: "orientation")) ?? .none
         config.allowHardwareEncoder = defaults.object(forKey: "allowHardwareEncoder") != nil
             ? defaults.bool(forKey: "allowHardwareEncoder") : true
-        config.h264Profile = Encoder.Profile(rawValue: defaults.integer(forKey: "h264Profile")) ?? .high
+        // Fixed, not loaded: the picker is gone, so a value saved by an older build must
+        // not quietly outlive it.
+        config.h264Profile = Self.fixedH264Profile
         return config
     }
 
@@ -639,7 +651,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         bitrateField.stringValue = config.bitrateMbps > 0 ? formatted(config.bitrateMbps) : ""
         alphaCheckbox.state = config.ignoreAlpha ? .on : .off
         orientationPopup.selectItem(at: config.orientation.rawValue)
-        profilePopup.selectItem(at: config.h264Profile.rawValue)
         encoderPopup.selectItem(at: config.allowHardwareEncoder ? 0 : 1)
     }
 
@@ -656,7 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         config.ignoreAlpha = alphaCheckbox.state == .on
         config.orientation = FrameOrientation(rawValue: max(orientationPopup.indexOfSelectedItem, 0)) ?? .none
         config.allowHardwareEncoder = encoderPopup.indexOfSelectedItem == 0
-        config.h264Profile = Encoder.Profile(rawValue: max(profilePopup.indexOfSelectedItem, 0)) ?? .high
+        config.h264Profile = Self.fixedH264Profile
         config.reconnectOnFormatChange = reconnectCheckbox.state == .on
         return config
     }

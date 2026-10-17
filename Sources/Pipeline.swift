@@ -26,7 +26,9 @@ struct PipelineConfig: Equatable {
     /// software H.264 managed 3.9 fps against the hardware block's 26.6.
     var allowHardwareEncoder = true
     /// H.264 only. Baseline is the cheapest for a receiver to decode.
-    var h264Profile = Encoder.Profile.high
+    /// Fixed at Main; see AppDelegate.fixedH264Profile for why, and for how to
+    /// make it a setting again.
+    var h264Profile = Encoder.Profile.main
 
     /// Drop and re-create the NDI sender when the video format changes, forcing every
     /// receiver to reconnect and re-negotiate.
