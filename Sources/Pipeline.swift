@@ -96,6 +96,7 @@ final class Pipeline {
     /// SDK ceiling for the proxy stream.
     static let previewMaxFPS = 45.0
     static let previewMaxEncodesInFlight = 4
+    static let maxEncodesInFlight = 4
 
     // Guards against the pipeline falling behind the source: rather than queueing frames
     // (which would inflate exactly the latency we are trying to measure) a frame that
@@ -730,9 +731,23 @@ final class Pipeline {
         guard let encoder else { return }
 
         flightLock.lock()
-        // Two in flight lets the encoder overlap with the next capture without letting a
-        // slow encoder build a backlog that would show up as latency downstream.
-        if encodesInFlight >= 2 {
+        // Enough in flight for the encoder to overlap with the next capture, without
+        // letting a slow one build a backlog that would show up as latency downstream.
+        //
+        // Two, unless the encoder told us it buffers. VideoToolbox rejects
+        // MaxFrameDelayCount = 0 for HEVC on this hardware (status -12900), so an HEVC
+        // session holds frames before emitting any; at 4K it holds more than two, and a
+        // depth-2 gate then refused every frame after the first two and never got one
+        // back — measured 0 fps sent and ~32 drops/s, with the encoder perfectly capable
+        // of 20 fps when driven directly. The same shape jammed the proxy encoder at
+        // depth 1.
+        //
+        // Conditioned on what the session actually reported rather than on the codec, and
+        // kept at 2 otherwise because depth alone costs latency: at 1080p H.264, which
+        // accepts the property and emits immediately, going to 4 took the total from
+        // 41 ms to 60 ms for nothing.
+        let depth = encoder.buffersFrames ? Self.maxEncodesInFlight : 2
+        if encodesInFlight >= depth {
             flightLock.unlock()
             stats.noteDrop()
             return

@@ -46,6 +46,12 @@ final class Encoder {
     /// Set when the session reports a hardware encoder was refused; surfaced in the stats panel.
     private(set) var isHardware = false
 
+    /// True when the session refused `MaxFrameDelayCount = 0`, which means it holds frames
+    /// before emitting any and the caller must keep more than a couple in flight or it
+    /// will wait forever for a frame that needs a later one to arrive first. HEVC does
+    /// this on Intel hardware here; H.264 accepts the property and emits immediately.
+    private(set) var buffersFrames = false
+
     private var session: VTCompressionSession?
     private var submitTimes = [Int64: CFAbsoluteTime]()
     private let submitLock = NSLock()
@@ -105,7 +111,9 @@ final class Encoder {
         //
         // Do NOT also set MaximizePowerEfficiency to false here "for latency" — measured
         // on the same machine it tripled it, to 45 ms.
-        set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0)
+        set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0, rejection: { [weak self] in
+            self?.buffersFrames = true
+        })
         set(kVTCompressionPropertyKey_AverageBitRate, bitrate)
         set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
         set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, keyframeIntervalSeconds)
@@ -117,11 +125,12 @@ final class Encoder {
 
     /// A property VideoToolbox does not support is otherwise accepted silently and simply
     /// never takes effect, which has bitten this project more than once.
-    private func set(_ key: CFString, _ value: Any) {
+    private func set(_ key: CFString, _ value: Any, rejection: (() -> Void)? = nil) {
         guard let session else { return }
         let status = VTSessionSetProperty(session, key: key, value: value as CFTypeRef)
         if status != noErr {
             FileHandle.standardError.write(Data("Encoder: \(key) rejected, status \(status)\n".utf8))
+            rejection?()
         }
     }
 
