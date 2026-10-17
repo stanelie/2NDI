@@ -844,6 +844,31 @@ receiver on this machine, which is why the reference sender is worth keeping aro
 NDI's own code with NDI's own canned bitstream, so anything that refuses it is not our bug,
 and any way our stream differs from it is a lead.
 
+## Which NDI library is in the bundle has to be visible
+
+The Advanced SDK's development licence stops delivering video after 30 minutes while the
+sender keeps reporting success. A library with that cut-off patched out does not, so a
+long measurement means something different depending on which one is in the bundle — and
+`build.sh` copies a stock library from `/Library` on *every* build, so a patched one
+survives exactly until the next build. That is easy to lose track of and expensive to
+discover afterwards.
+
+So the app detects it and says so: a green tick and "HX library patched" in the bottom-left
+corner, and a line on stderr at launch, which is the version that survives running headless
+or from the menu bar.
+
+Detection is by signature rather than by behaviour — waiting half an hour to find out is
+not a diagnostic. The patch rewrites the timeout constant in place, five sites per
+architecture slice, so the replacement bytes appear in a patched library and in nothing
+else. Verified both ways against the real bundle: stock reports stock, the same bundle
+patched with the real script reports patched, and a rebuild puts it back. A library with
+both the original and the replacement present is reported as neither, since that is a patch
+that only partly applied.
+
+The indicator keeps its layout constraints when hidden, so nothing moves when it appears,
+and the controls column is pinned above it rather than to the window so it cannot grow
+down over it.
+
 ## Measured end to end
 
 Against `syphon_pattern` at 1280 × 720 / ~46 fps, receiving with `ndi_probe`:

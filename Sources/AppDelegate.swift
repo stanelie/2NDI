@@ -27,6 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
     private var backendDescription = ""
     private let statusLabel = NSTextField(labelWithString: "Idle")
     private let statsLabel = NSTextField(wrappingLabelWithString: "")
+    /// Shown only when the bundled Advanced library has had its 30-minute development
+    /// limit patched out. Which library is in the bundle changes what a long measurement
+    /// means, and build.sh re-copies a stock one on every build, so it is easy to lose
+    /// track of — hence a standing indicator rather than something to remember.
+    private let patchedIndicator = NSStackView()
     private var previewView: PreviewView!
 
     private var sources: [InputSource] = []
@@ -184,11 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         // take zero height when hidden without disturbing anything below it, and a vertical
         // NSStackView sized the rest by its fitting height instead, which collapsed the
         // preview to nothing (MTKView then logs "nextDrawable returning nil" 30×/s).
+        buildPatchedIndicator()
+
         let content = NSView()
         content.addSubview(banner)
         content.addSubview(controls)
         content.addSubview(previewView)
         content.addSubview(statsLabel)
+        content.addSubview(patchedIndicator)
 
         bannerZeroHeight = banner.heightAnchor.constraint(equalToConstant: 0)
         bannerZeroHeight.isActive = true
@@ -200,7 +208,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
 
             controls.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             controls.topAnchor.constraint(equalTo: banner.bottomAnchor, constant: 16),
-            controls.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+            // Against the indicator rather than the window, so a tall controls column
+            // cannot grow down over it. The indicator keeps its constraints when hidden,
+            // so nothing shifts when it appears.
+            controls.bottomAnchor.constraint(lessThanOrEqualTo: patchedIndicator.topAnchor, constant: -8),
             controls.widthAnchor.constraint(equalToConstant: 300),
 
             previewView.leadingAnchor.constraint(equalTo: controls.trailingAnchor, constant: 16),
@@ -212,6 +223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
             statsLabel.trailingAnchor.constraint(equalTo: previewView.trailingAnchor),
             statsLabel.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 12),
             statsLabel.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -16),
+
+            patchedIndicator.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            patchedIndicator.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
         ])
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
@@ -1029,6 +1043,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSUs
         let build = info?["CFBundleVersion"] as? String
         guard let build, !build.isEmpty, build != short else { return short }
         return "\(short) (\(build))"
+    }
+
+
+    /// A green tick and a word, bottom-left, present only when the library is patched.
+    ///
+    /// Silent in the ordinary case on purpose: the stock library is the normal state and
+    /// does not need announcing, while the patched one changes what a thirty-minute
+    /// measurement means and does.
+    private func buildPatchedIndicator() {
+        let tick = NSImageView()
+        tick.image = NSImage(systemSymbolName: "checkmark.square.fill",
+                             accessibilityDescription: "patched")
+        tick.contentTintColor = .systemGreen
+        tick.setContentHuggingPriority(.required, for: .horizontal)
+
+        let label = NSTextField(labelWithString: "HX library patched")
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+
+        patchedIndicator.orientation = .horizontal
+        patchedIndicator.spacing = 5
+        patchedIndicator.alignment = .centerY
+        patchedIndicator.translatesAutoresizingMaskIntoConstraints = false
+        patchedIndicator.setViews([tick, label], in: .leading)
+        patchedIndicator.toolTip = "The bundled NDI Advanced library has had its 30-minute "
+            + "development-licence cut-off patched out, so this build keeps delivering past "
+            + "it. build.sh copies a stock library on every build, so this disappears until "
+            + "the patch is applied again."
+        patchedIndicator.isHidden = LibraryPatch.state != .patched
+
+        // Also on stderr: the indicator is invisible when the app runs headless or from
+        // the menu bar, and this is exactly the kind of thing that needs to be recoverable
+        // from a log when a measurement is questioned afterwards.
+        let described: String
+        switch LibraryPatch.state {
+        case .patched: described = "patched (no 30-minute cut-off)"
+        case .stock:   described = "stock (delivery stops after 30 minutes)"
+        case .unknown: described = "not recognised"
+        }
+        FileHandle.standardError.write(Data("2NDI: NDI Advanced library is \(described)\n".utf8))
     }
 
     @objc private func showAbout() {

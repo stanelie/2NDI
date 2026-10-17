@@ -51,6 +51,7 @@ SWIFT_SRCS=(
   "$PROJ/Sources/Encoder.swift"
   "$PROJ/Sources/FrameRenderer.swift"
   "$PROJ/Sources/Snapshot.swift"
+  "$PROJ/Sources/LibraryPatch.swift"
   "$PROJ/Sources/FramePool.swift"
   "$PROJ/Sources/Pipeline.swift"
   "$PROJ/Sources/PreviewView.swift"
